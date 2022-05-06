@@ -1,3 +1,168 @@
 <template>
     <a-button type="primary">file upload client</a-button>
+    <a-layout class="file-upload">
+        <a-layout-header>File Upload</a-layout-header>
+        <a-layout-content>
+            <input type="file" name="file" @change="handleFileChange">
+            <a-space>
+                <a-button type="primary" @click="handleUpload">
+                上传</a-button>
+                <a-button @click="handleSlowUpload">慢启动上传</a-button>
+            </a-space>
+        </a-layout-content>
+        <a-layout-footer>Copyright xxx</a-layout-footer>
+    </a-layout>
 </template>
+<script setup lang="ts">
+    // import service from './utils/request'
+import sparkMd5 from 'spark-md5'
+import {message} from 'ant-design-vue'
+import { ref } from 'vue';
+
+    const CHUNK_SIZE = 1*1024*1024 // 1M
+    let selectedFile:any = null
+    let hasgProgress = ref(0)
+    // 点击文件按钮事件
+    const handleFileChange = (e:any)=>{
+        // 获取文件对象
+        const {file} = e.target.files
+        if(!file) return
+        selectedFile = file
+    }
+    const blobToData = (blob:any)=>{
+        return new Promise(resolve=>{
+            const reader = new FileReader()
+            reader.onload = function(){
+                resolve(reader.result)
+            }
+            reader.readAsBinaryString(blob)
+        })
+    }
+    const createFileChunk = (file:any,size=CHUNK_SIZE)=>{
+        // 生成文件块 Blob.slice语法
+        const chunks = []
+        let cur = 0
+        while (cur < file.size) {
+            chunks.push({index:cur,file:file.slice(cur,cur+size)})
+            cur+= size
+        }
+        return chunks
+    }
+    // 直接计算md5,大文件会卡顿
+    const calculateHash = async (file:any) =>{
+        const data = await blobToData(file)
+        return sparkMd5.hash(data)
+    }
+    const calculateHashIdle = async (chunks:any) =>{
+        return new Promise(resolve=>{
+            const spark = new sparkMd5.ArrayBuffer()
+            let count = 0
+            const appendToSpark = (file:any) =>{
+                return new Promise(resolve=>{
+                    const reader = new FileReader()
+                    reader.readAsArrayBuffer(file)
+                    reader.onload = e =>{
+                        spark.append(e.target?.result)
+                        resolve('')
+                    }
+                })
+            }
+
+            const workLoop = async (deadline:any)=>{
+                while (count<chunks.length && 
+                deadline.timeRemaining() > 1) {
+                  await appendToSpark(chunks[count].file)
+                  count++
+                  if(count<chunks.length){
+                    hasgProgress.value = Number(
+                        ((100*count)/chunks.length).toFixed(2)
+                    )
+                  }else{
+                      hasgProgress.value = 100
+                      resolve(spark.end())
+                  }
+                }
+                console.log(`浏览器有任务了,开始计算${count}个,
+                等待下次浏览器空闲`)
+                window.requestIdleCallback(workLoop)
+            }
+                window.requestIdleCallback(workLoop)
+        })
+    }
+
+    const calculateHashSample = (file:any)=>{
+        console.log(file)
+        return new Promise(resolve=>{
+            const spark = new sparkMd5.ArrayBuffer()
+            const reader = new FileReader()
+            // 文件大小
+            const size = file.size
+            let offset = 2*1024*1024
+
+            let chunks = [file.slice(0,offset)]
+
+            let cur = offset
+
+            while (cur < size) {
+                if(cur + offset >= size){
+                    chunks.push(file.slice(cur,cur+offset))
+                }else{
+                    // 中间的 前中后去两个字节
+                    const mid = cur + offset/2
+                    const end = cur + offset
+                    chunks.push(file.slice(cur,cur+2))
+                    chunks.push(file.slice(mid,mid+2))
+                    chunks.push(file.slice(end-2,end))
+                }
+                cur += offset
+            }
+            // 拼接
+            reader.readAsArrayBuffer(new Blob(chunks))
+            reader.onload = (e:any)=>{
+                spark.append(e.target.result)
+                hasgProgress.value = 100
+                resolve(spark.end())
+            }
+        })
+    }
+    // 上传
+    const handleUpload = async () => {
+        if(!selectedFile){
+            message.info('请选择文件')
+            return
+        }
+        let chunks = createFileChunk(selectedFile)
+        // 计算 hash文件指纹标识
+        // let hash = await calculateHash(selectedFile)
+        // web-worker 防止卡顿主线程
+        // requestIdleCallback
+        // let hash = await calculateIdle(chunks)
+
+        // 抽样哈希,牺牲一定的准确率换来效率,hash一样的不一定是同一个文件
+        // 但是不一样的一定不是
+        let hash = await calculateHashSample(selectedFile)
+        console.log(hash)
+    }
+    // 满上传
+    const handleSlowUpload = () => {}
+
+    // service.get('/').then(res=>{
+    //     console.log(res)
+    // })
+
+    
+</script>
+<style lang="less" scoped>
+.ant-layout{
+    text-align: center;
+    .ant-layout-header{
+        font-size: 20px;
+        color: #fff;
+        background: #7abcea;
+    }
+    .ant-layout-content{
+        margin-top: 50px;
+        min-height: calc(100vh - 64px - 70px);
+    }
+}
+</style>
